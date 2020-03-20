@@ -8,6 +8,7 @@ import (
 	"go/format"
 	"io"
 	"io/ioutil"
+	"markdownfmt/url"
 	"strings"
 
 	"github.com/mattn/go-runewidth"
@@ -34,6 +35,9 @@ type markdownRenderer struct {
 
 	// stringWidth is used internally to calculate visual width of a string.
 	stringWidth func(s string) (width int)
+
+	deducer *url.Deducer
+	filePath string
 }
 
 func (mr *markdownRenderer) RenderNode(w io.Writer, node *blackfriday.Node, entering bool) blackfriday.WalkStatus {
@@ -379,17 +383,43 @@ func (mr *markdownRenderer) Link(w io.Writer, node *blackfriday.Node) {
 		})
 	}
 
+	oldDest := string(node.LinkData.Destination)
+	newDest := ""
+	urlType := mr.deducer.DeduceTypeOfDestination(oldDest)
+
+	switch urlType {
+	case url.RedundantlyVerbose:
+		newDest = mr.deducer.RewriteRedundantlyVerboseLink(oldDest)
+		newDest = mr.deducer.RewriteContainsAmpersandLink(newDest)
+		fmt.Println("%s link %q rewritten to %q", urlType, oldDest, newDest)
+	case url.Relative:
+		newDest = mr.deducer.RewriteRelativeLink(oldDest, mr.filePath)
+		newDest = mr.deducer.RewriteContainsAmpersandLink(newDest)
+		fmt.Println("%s link %q rewritten to %q", urlType, oldDest, newDest)
+	case url.Absolute:
+		newDest = oldDest
+		newDest = mr.deducer.RewriteContainsAmpersandLink(newDest)
+		if newDest != oldDest {
+			fmt.Println("%s link %q rewritten to %q", urlType, oldDest, newDest)
+		}
+	case url.Anchor:
+		newDest = oldDest
+	case url.External:
+		newDest = oldDest
+	}
+
 	// There is no title and the destination is the same as the contents.
 	// This can be represented as an auto-link.
-	if len(node.LinkData.Title) == 0 && bytes.Equal(node.LinkData.Destination, buf.Bytes()) {
-		w.Write(escape(node.LinkData.Destination))
+	if len(node.LinkData.Title) == 0 && bytes.Equal([]byte(oldDest), buf.Bytes()) {
+		fmt.Println("Autolink encountered for dest %q (was %q)", newDest, oldDest)
+		w.Write(escape([]byte("<" + oldDest + ">")))
 		return
 	}
 
 	io.WriteString(w, "[")
 	w.Write(buf.Bytes())
 	io.WriteString(w, "](")
-	w.Write(escape(node.LinkData.Destination))
+	w.Write(escape([]byte(newDest)))
 	if len(node.LinkData.Title) != 0 {
 		io.WriteString(w, ` "`)
 		w.Write(node.LinkData.Title)
@@ -523,13 +553,16 @@ func terminalStringWidth(s string) (width int) {
 
 // NewRenderer returns a Markdown renderer.
 // If opt is nil the defaults are used.
-func NewRenderer(opt *Options) blackfriday.Renderer {
+func NewRenderer(opt *Options, filename, localDomain string) blackfriday.Renderer {
 	mr := &markdownRenderer{
 		normalTextMarker:   make(map[*bytes.Buffer]int),
 		orderedListCounter: make(map[int]int),
 		paragraph:          make(map[int]bool),
 
 		stringWidth: runewidth.StringWidth,
+
+		filePath: filename,
+		deducer: url.NewDeducerWithLocalDomain(localDomain),
 	}
 	if opt != nil {
 		mr.opt = *opt
@@ -549,7 +582,7 @@ type Options struct {
 // Process formats Markdown.
 // If opt is nil the defaults are used.
 // Error can only occur when reading input from filename rather than src.
-func Process(filename string, src []byte, opt *Options) ([]byte, error) {
+func Process(filename, localDomain string, src []byte, opt *Options) ([]byte, error) {
 	// Get source.
 	text, err := readSource(filename, src)
 	if err != nil {
@@ -565,7 +598,7 @@ func Process(filename string, src []byte, opt *Options) ([]byte, error) {
 		blackfriday.SpaceHeadings |
 		blackfriday.NoEmptyLineBeforeBlock
 
-	output := blackfriday.Run(text, blackfriday.WithRenderer(NewRenderer(opt)), blackfriday.WithExtensions(extensions))
+	output := blackfriday.Run(text, blackfriday.WithRenderer(NewRenderer(opt, filename, localDomain)), blackfriday.WithExtensions(extensions))
 	return output, nil
 }
 

@@ -13,15 +13,17 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/jsternberg/markdownfmt/markdown"
+	"markdownfmt/markdown"
+
 	"golang.org/x/crypto/ssh/terminal"
 )
 
 var (
 	// Main operation modes.
-	list   = flag.Bool("l", false, "list files whose formatting differs from markdownfmt's")
-	write  = flag.Bool("w", false, "write result to (source) file instead of stdout")
-	doDiff = flag.Bool("d", false, "display diffs instead of rewriting files")
+	list        = flag.Bool("l", false, "list files whose formatting differs from markdownfmt's")
+	write       = flag.Bool("w", false, "write result to (source) file instead of stdout")
+	doDiff      = flag.Bool("d", false, "display diffs instead of rewriting files")
+	domain = flag.String("l", "", "fqdn of server")
 
 	exitCode = 0
 )
@@ -42,9 +44,10 @@ func isMarkdownFile(f os.FileInfo) bool {
 	return !f.IsDir() && !strings.HasPrefix(name, ".") && (strings.HasSuffix(name, ".md") || strings.HasSuffix(name, ".markdown"))
 }
 
-func processFile(filename string, in io.Reader, out io.Writer, stdin bool) error {
+func processFile(filename, localDomain string, in io.Reader, out io.Writer, stdin bool) error {
 	if in == nil {
 		f, err := os.Open(filename)
+		fmt.Fprintf(os.Stderr, "file: %s", filename)
 		if err != nil {
 			return err
 		}
@@ -60,7 +63,7 @@ func processFile(filename string, in io.Reader, out io.Writer, stdin bool) error
 	isTerminal := func() bool {
 		return terminal.IsTerminal(int(os.Stdout.Fd())) && os.Getenv("TERM") != "dumb"
 	}
-	res, err := markdown.Process(filename, src, &markdown.Options{
+	res, err := markdown.Process(filename, localDomain, src, &markdown.Options{
 		Terminal: !*list && !*write && !*doDiff && isTerminal(),
 	})
 	if err != nil {
@@ -97,7 +100,7 @@ func processFile(filename string, in io.Reader, out io.Writer, stdin bool) error
 
 func visitFile(path string, f os.FileInfo, err error) error {
 	if err == nil && isMarkdownFile(f) {
-		err = processFile(path, nil, os.Stdout, false)
+		err = processFile(path, *domain, nil, os.Stdout, false)
 	}
 	if err != nil {
 		report(err)
@@ -122,7 +125,7 @@ func markdownfmtMain() {
 	flag.Parse()
 
 	if flag.NArg() == 0 {
-		if err := processFile("<standard input>", os.Stdin, os.Stdout, true); err != nil {
+		if err := processFile("<standard input>", *domain, os.Stdin, os.Stdout, true); err != nil {
 			report(err)
 		}
 		return
@@ -136,7 +139,7 @@ func markdownfmtMain() {
 		case dir.IsDir():
 			walkDir(path)
 		default:
-			if err := processFile(path, nil, os.Stdout, false); err != nil {
+			if err := processFile(path, *domain, nil, os.Stdout, false); err != nil {
 				report(err)
 			}
 		}
