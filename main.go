@@ -20,10 +20,10 @@ import (
 
 var (
 	// Main operation modes.
-	list        = flag.Bool("l", false, "list files whose formatting differs from markdownfmt's")
-	write       = flag.Bool("w", false, "write result to (source) file instead of stdout")
-	doDiff      = flag.Bool("d", false, "display diffs instead of rewriting files")
-	domain = flag.String("l", "", "fqdn of server")
+	list   = flag.Bool("l", false, "list files whose formatting differs from markdownfmt's")
+	write  = flag.Bool("w", false, "write result to (source) file instead of stdout")
+	doDiff = flag.Bool("d", false, "display diffs instead of rewriting files")
+	domain = flag.String("f", "", "fqdn of server")
 
 	exitCode = 0
 )
@@ -44,12 +44,11 @@ func isMarkdownFile(f os.FileInfo) bool {
 	return !f.IsDir() && !strings.HasPrefix(name, ".") && (strings.HasSuffix(name, ".md") || strings.HasSuffix(name, ".markdown"))
 }
 
-func processFile(filename, localDomain string, in io.Reader, out io.Writer, stdin bool) error {
+func processFile(filename, localDomain string, in io.Reader, out io.Writer, stdin bool) (*strings.Builder, error) {
 	if in == nil {
 		f, err := os.Open(filename)
-		fmt.Fprintf(os.Stderr, "file: %s", filename)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		defer f.Close()
 		in = f
@@ -57,17 +56,27 @@ func processFile(filename, localDomain string, in io.Reader, out io.Writer, stdi
 
 	src, err := ioutil.ReadAll(in)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	isTerminal := func() bool {
 		return terminal.IsTerminal(int(os.Stdout.Fd())) && os.Getenv("TERM") != "dumb"
 	}
+
+	log := new(strings.Builder)
+
 	res, err := markdown.Process(filename, localDomain, src, &markdown.Options{
 		Terminal: !*list && !*write && !*doDiff && isTerminal(),
-	})
+	}, log)
 	if err != nil {
-		return err
+		return nil, err
+	}
+
+	if log.Len() != 0 {
+		contents := log.String()
+		log.Reset()
+		log.WriteString(fmt.Sprintf("file %s:\n", filename))
+		log.WriteString(contents)
 	}
 
 	if !bytes.Equal(src, res) {
@@ -78,13 +87,13 @@ func processFile(filename, localDomain string, in io.Reader, out io.Writer, stdi
 		if *write {
 			err = ioutil.WriteFile(filename, res, 0)
 			if err != nil {
-				return err
+				return nil, err
 			}
 		}
 		if *doDiff {
 			data, err := diff(src, res)
 			if err != nil {
-				return fmt.Errorf("computing diff: %s", err)
+				return nil, fmt.Errorf("computing diff: %s", err)
 			}
 			fmt.Printf("diff %s markdownfmt/%s\n", filename, filename)
 			out.Write(data)
@@ -93,18 +102,28 @@ func processFile(filename, localDomain string, in io.Reader, out io.Writer, stdi
 
 	if !*list && !*write && !*doDiff {
 		_, err = out.Write(res)
+		if err != nil {
+			return nil, err
+		}
 	}
 
-	return err
+	return log, nil
 }
 
 func visitFile(path string, f os.FileInfo, err error) error {
+	var log *strings.Builder = nil
 	if err == nil && isMarkdownFile(f) {
-		err = processFile(path, *domain, nil, os.Stdout, false)
+		log, err = processFile(path, *domain, nil, os.Stdout, false)
 	}
+
 	if err != nil {
 		report(err)
 	}
+
+	if log != nil && log.Len() != 0 {
+		fmt.Print(log)
+	}
+
 	return nil
 }
 
@@ -125,7 +144,7 @@ func markdownfmtMain() {
 	flag.Parse()
 
 	if flag.NArg() == 0 {
-		if err := processFile("<standard input>", *domain, os.Stdin, os.Stdout, true); err != nil {
+		if _, err := processFile("<standard input>", *domain, os.Stdin, os.Stdout, true); err != nil {
 			report(err)
 		}
 		return
@@ -139,8 +158,13 @@ func markdownfmtMain() {
 		case dir.IsDir():
 			walkDir(path)
 		default:
-			if err := processFile(path, *domain, nil, os.Stdout, false); err != nil {
+			log, err := processFile(path, *domain, nil, os.Stdout, false)
+			if err != nil {
 				report(err)
+			}
+
+			if log != nil && log.Len() != 0 {
+				fmt.Print(log)
 			}
 		}
 	}

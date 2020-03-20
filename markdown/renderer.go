@@ -36,8 +36,9 @@ type markdownRenderer struct {
 	// stringWidth is used internally to calculate visual width of a string.
 	stringWidth func(s string) (width int)
 
-	deducer *url.Deducer
+	deducer  *url.Deducer
 	filePath string
+	log      *strings.Builder
 }
 
 func (mr *markdownRenderer) RenderNode(w io.Writer, node *blackfriday.Node, entering bool) blackfriday.WalkStatus {
@@ -104,8 +105,8 @@ func (mr *markdownRenderer) RenderNode(w io.Writer, node *blackfriday.Node, ente
 	return blackfriday.GoToNext
 }
 
-func (_ *markdownRenderer) RenderHeader(w io.Writer, ast *blackfriday.Node) {}
-func (_ *markdownRenderer) RenderFooter(w io.Writer, ast *blackfriday.Node) {}
+func (*markdownRenderer) RenderHeader(w io.Writer, ast *blackfriday.Node) {}
+func (*markdownRenderer) RenderFooter(w io.Writer, ast *blackfriday.Node) {}
 
 func formatCode(lang string, text []byte) (formattedCode []byte, ok bool) {
 	switch lang {
@@ -175,7 +176,7 @@ func (mr *markdownRenderer) BlockQuote(w io.Writer, node *blackfriday.Node) {
 		io.WriteString(w, "\n")
 	}
 }
-func (_ *markdownRenderer) BlockHtml(w io.Writer, text []byte) {
+func (*markdownRenderer) BlockHtml(w io.Writer, text []byte) {
 	doubleSpace(w)
 	w.Write(text)
 	w.Write([]byte{'\n'})
@@ -217,7 +218,7 @@ func (mr *markdownRenderer) Header(w io.Writer, node *blackfriday.Node, entering
 		return blackfriday.SkipChildren
 	}
 }
-func (_ *markdownRenderer) HRule(w io.Writer) {
+func (*markdownRenderer) HRule(w io.Writer) {
 	doubleSpace(w)
 	io.WriteString(w, "---\n")
 }
@@ -361,10 +362,30 @@ func (mr *markdownRenderer) Strong(w io.Writer, entering bool) {
 		io.WriteString(w, "\x1b[0m") // Reset.
 	}
 }
-func (_ *markdownRenderer) Image(w io.Writer, link []byte, title []byte, entering bool) {
+func (mr *markdownRenderer) Image(w io.Writer, link []byte, title []byte, entering bool) {
 	if entering {
 		io.WriteString(w, "![")
 	} else {
+		oldLink := string(link)
+		newLink := oldLink
+		urlType := mr.deducer.DeduceTypeOfDestination(oldLink)
+
+		switch urlType {
+		case url.RedundantlyVerbose:
+			newLink = mr.deducer.RewriteRedundantlyVerboseLink(oldLink)
+			newLink = mr.deducer.RewriteContainsAmpersandLink(newLink)
+			fmt.Fprintf(mr.log, "\t%s img href %q rewritten to %q\n", urlType, oldLink, newLink)
+		case url.Relative:
+			newLink = mr.deducer.RewriteRelativeLink(oldLink, mr.filePath)
+			newLink = mr.deducer.RewriteContainsAmpersandLink(newLink)
+			fmt.Fprintf(mr.log, "\t%s img href %q rewritten to %q\n", urlType, oldLink, newLink)
+		case url.Absolute:
+			newLink = mr.deducer.RewriteContainsAmpersandLink(newLink)
+			if newLink != oldLink {
+				fmt.Fprintf(mr.log, "\t%s img href %q rewritten to %q\n", urlType, oldLink, newLink)
+			}
+		}
+
 		io.WriteString(w, "](")
 		w.Write(escape(link))
 		if len(title) != 0 {
@@ -384,35 +405,30 @@ func (mr *markdownRenderer) Link(w io.Writer, node *blackfriday.Node) {
 	}
 
 	oldDest := string(node.LinkData.Destination)
-	newDest := ""
+	newDest := oldDest
 	urlType := mr.deducer.DeduceTypeOfDestination(oldDest)
 
 	switch urlType {
 	case url.RedundantlyVerbose:
 		newDest = mr.deducer.RewriteRedundantlyVerboseLink(oldDest)
 		newDest = mr.deducer.RewriteContainsAmpersandLink(newDest)
-		fmt.Println("%s link %q rewritten to %q", urlType, oldDest, newDest)
+		fmt.Fprintf(mr.log, "\t%s link %q rewritten to %q\n", urlType, oldDest, newDest)
 	case url.Relative:
 		newDest = mr.deducer.RewriteRelativeLink(oldDest, mr.filePath)
 		newDest = mr.deducer.RewriteContainsAmpersandLink(newDest)
-		fmt.Println("%s link %q rewritten to %q", urlType, oldDest, newDest)
+		fmt.Fprintf(mr.log, "\t%s link %q rewritten to %q\n", urlType, oldDest, newDest)
 	case url.Absolute:
 		newDest = oldDest
 		newDest = mr.deducer.RewriteContainsAmpersandLink(newDest)
 		if newDest != oldDest {
-			fmt.Println("%s link %q rewritten to %q", urlType, oldDest, newDest)
+			fmt.Fprintf(mr.log, "\t%s link %q rewritten to %q\n", urlType, oldDest, newDest)
 		}
-	case url.Anchor:
-		newDest = oldDest
-	case url.External:
-		newDest = oldDest
 	}
 
 	// There is no title and the destination is the same as the contents.
 	// This can be represented as an auto-link.
-	if len(node.LinkData.Title) == 0 && bytes.Equal([]byte(oldDest), buf.Bytes()) {
-		fmt.Println("Autolink encountered for dest %q (was %q)", newDest, oldDest)
-		w.Write(escape([]byte("<" + oldDest + ">")))
+	if urlType == url.External && len(node.LinkData.Title) == 0 && bytes.Equal([]byte(oldDest), buf.Bytes()) {
+		w.Write(escape([]byte(oldDest)))
 		return
 	}
 
@@ -427,20 +443,20 @@ func (mr *markdownRenderer) Link(w io.Writer, node *blackfriday.Node) {
 	}
 	io.WriteString(w, ")")
 }
-func (_ *markdownRenderer) RawHtmlTag(out *bytes.Buffer, tag []byte) {
+func (*markdownRenderer) RawHtmlTag(out *bytes.Buffer, tag []byte) {
 	out.Write(tag)
 }
-func (_ *markdownRenderer) TripleEmphasis(out *bytes.Buffer, text []byte) {
+func (*markdownRenderer) TripleEmphasis(out *bytes.Buffer, text []byte) {
 	out.WriteString("***")
 	out.Write(text)
 	out.WriteString("***")
 }
-func (_ *markdownRenderer) StrikeThrough(out *bytes.Buffer, text []byte) {
+func (*markdownRenderer) StrikeThrough(out *bytes.Buffer, text []byte) {
 	out.WriteString("~~")
 	out.Write(text)
 	out.WriteString("~~")
 }
-func (_ *markdownRenderer) FootnoteRef(out *bytes.Buffer, ref []byte, id int) {
+func (*markdownRenderer) FootnoteRef(out *bytes.Buffer, ref []byte, id int) {
 	out.WriteString("<FootnoteRef: Not implemented.>") // TODO
 }
 
@@ -553,7 +569,7 @@ func terminalStringWidth(s string) (width int) {
 
 // NewRenderer returns a Markdown renderer.
 // If opt is nil the defaults are used.
-func NewRenderer(opt *Options, filename, localDomain string) blackfriday.Renderer {
+func NewRenderer(opt *Options, filename, localDomain string, log *strings.Builder) blackfriday.Renderer {
 	mr := &markdownRenderer{
 		normalTextMarker:   make(map[*bytes.Buffer]int),
 		orderedListCounter: make(map[int]int),
@@ -562,7 +578,8 @@ func NewRenderer(opt *Options, filename, localDomain string) blackfriday.Rendere
 		stringWidth: runewidth.StringWidth,
 
 		filePath: filename,
-		deducer: url.NewDeducerWithLocalDomain(localDomain),
+		deducer:  url.NewDeducerWithLocalDomain(localDomain),
+		log:      log,
 	}
 	if opt != nil {
 		mr.opt = *opt
@@ -582,7 +599,7 @@ type Options struct {
 // Process formats Markdown.
 // If opt is nil the defaults are used.
 // Error can only occur when reading input from filename rather than src.
-func Process(filename, localDomain string, src []byte, opt *Options) ([]byte, error) {
+func Process(filename, localDomain string, src []byte, opt *Options, log *strings.Builder) ([]byte, error) {
 	// Get source.
 	text, err := readSource(filename, src)
 	if err != nil {
@@ -598,7 +615,7 @@ func Process(filename, localDomain string, src []byte, opt *Options) ([]byte, er
 		blackfriday.SpaceHeadings |
 		blackfriday.NoEmptyLineBeforeBlock
 
-	output := blackfriday.Run(text, blackfriday.WithRenderer(NewRenderer(opt, filename, localDomain)), blackfriday.WithExtensions(extensions))
+	output := blackfriday.Run(text, blackfriday.WithRenderer(NewRenderer(opt, filename, localDomain, log)), blackfriday.WithExtensions(extensions))
 	return output, nil
 }
 

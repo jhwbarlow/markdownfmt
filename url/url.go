@@ -2,7 +2,6 @@ package url
 
 import (
 	"errors"
-	"fmt"
 	"strings"
 )
 
@@ -24,6 +23,9 @@ const (
 
 	// Anchor is a same-page anchor link
 	Anchor
+
+	// Mail is a mailto link
+	Mail
 )
 
 func (t Type) String() string {
@@ -41,15 +43,6 @@ func (t Type) String() string {
 	}
 
 	panic(errors.New("invalid Type value"))
-}
-
-// TypeDeducer describes an interface of types that deduce the type of a URL
-type TypeDeducer interface {
-	DeduceTypeOfDestination(string) Type
-	RewriteRelativeLink(string, string) string
-	RewriteRedundantlyVerboseLink(string) string
-	RewriteContainsAmpersandLink(string) string
-	ContainsAmpersand(string) bool
 }
 
 // Deducer deduces the type of a URL
@@ -87,6 +80,10 @@ func (d *Deducer) DeduceTypeOfDestination(dest string) Type {
 		return Anchor
 	}
 
+	if strings.HasPrefix(dest, "mailto:") {
+		return Mail
+	}
+
 	if strings.HasPrefix(dest, "/") {
 		return Absolute
 	}
@@ -115,12 +112,12 @@ func (d *Deducer) RewriteRedundantlyVerboseLink(dest string) string {
 }
 
 func (*Deducer) RewriteRelativeLink(dest, filePath string) string {
-	fmt.Printf("Processing links in file: %q\n", filePath)
+	//fmt.Printf("Processing links in file: %q\n", filePath)
 	if !strings.HasPrefix(filePath, "/") {
 		filePath = "/" + filePath
 	}
 
-	fmt.Printf("Processing links in file: %q\n", filePath)
+	//fmt.Printf("Processing links in file: %q\n", filePath)
 	filePath = stripFileName(filePath)
 
 	return filePath + "/" + dest
