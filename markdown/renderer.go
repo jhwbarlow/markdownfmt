@@ -387,7 +387,7 @@ func (mr *markdownRenderer) Image(w io.Writer, link []byte, title []byte, enteri
 		}
 
 		io.WriteString(w, "](")
-		w.Write(escape(link))
+		w.Write(escape([]byte(newLink)))
 		if len(title) != 0 {
 			io.WriteString(w, ` "`)
 			w.Write(title)
